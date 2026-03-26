@@ -254,6 +254,17 @@ ppm_t *ppm_read_strip(const char *path, uint32_t width,
     ppm_t *img = ppm_alloc(width, strip_height);
     if (!img) { fclose(f); return NULL; }
 
+    /* Seek past the rows before row_start */
+    if (row_start > 0) {
+        long skip = (long)row_start * (long)width * 3;
+        if (fseek(f, skip, SEEK_CUR) != 0) {
+            fprintf(stderr, "ppm_read_strip: seek failed in %s\n", path);
+            ppm_free(img);
+            fclose(f);
+            return NULL;
+        }
+    }
+
     size_t nbytes = (size_t)width * strip_height * 3;
     if (fread(img->data, 1, nbytes, f) != nbytes) {
         fprintf(stderr, "ppm_read_strip: %s truncated\n", path);

@@ -39,6 +39,66 @@ static ssize_t read_all(int fd, void *buf, size_t count)
 }
 
 /* --------------------------------------------------------------------------
+ * Gaussian pre-blur for k-means (sigma=1, 5-tap separable kernel)
+ * Writes into out_buf (caller allocates, same size as img->data).
+ * img->data is never modified.
+ * -------------------------------------------------------------------------- */
+static void gaussian_blur_rgb(const uint8_t *src, uint8_t *out_buf,
+                               uint32_t W, uint32_t H)
+{
+    /* 5-tap kernel: [1/16, 4/16, 6/16, 4/16, 1/16] */
+    static const float K[5] = { 0.0625f, 0.25f, 0.375f, 0.25f, 0.0625f };
+    const int R = 2;  /* kernel half-width */
+
+    uint8_t *tmp = malloc((size_t)W * H * 3);
+    if (!tmp) {
+        /* fallback: copy unchanged */
+        memcpy(out_buf, src, (size_t)W * H * 3);
+        return;
+    }
+
+    /* Horizontal pass: src -> tmp */
+    for (uint32_t y = 0; y < H; y++) {
+        for (uint32_t x = 0; x < W; x++) {
+            float acc[3] = {0};
+            for (int k = -R; k <= R; k++) {
+                int nx = (int)x + k;
+                if (nx < 0)        nx = 0;
+                if (nx >= (int)W)  nx = (int)W - 1;
+                float w = K[k + R];
+                acc[0] += w * src[(y * W + (uint32_t)nx) * 3 + 0];
+                acc[1] += w * src[(y * W + (uint32_t)nx) * 3 + 1];
+                acc[2] += w * src[(y * W + (uint32_t)nx) * 3 + 2];
+            }
+            tmp[(y * W + x) * 3 + 0] = (uint8_t)(acc[0] + 0.5f);
+            tmp[(y * W + x) * 3 + 1] = (uint8_t)(acc[1] + 0.5f);
+            tmp[(y * W + x) * 3 + 2] = (uint8_t)(acc[2] + 0.5f);
+        }
+    }
+
+    /* Vertical pass: tmp -> out_buf */
+    for (uint32_t y = 0; y < H; y++) {
+        for (uint32_t x = 0; x < W; x++) {
+            float acc[3] = {0};
+            for (int k = -R; k <= R; k++) {
+                int ny = (int)y + k;
+                if (ny < 0)        ny = 0;
+                if (ny >= (int)H)  ny = (int)H - 1;
+                float w = K[k + R];
+                acc[0] += w * tmp[((uint32_t)ny * W + x) * 3 + 0];
+                acc[1] += w * tmp[((uint32_t)ny * W + x) * 3 + 1];
+                acc[2] += w * tmp[((uint32_t)ny * W + x) * 3 + 2];
+            }
+            out_buf[(y * W + x) * 3 + 0] = (uint8_t)(acc[0] + 0.5f);
+            out_buf[(y * W + x) * 3 + 1] = (uint8_t)(acc[1] + 0.5f);
+            out_buf[(y * W + x) * 3 + 2] = (uint8_t)(acc[2] + 0.5f);
+        }
+    }
+
+    free(tmp);
+}
+
+/* --------------------------------------------------------------------------
  * run_parent
  * -------------------------------------------------------------------------- */
 int run_parent(const char *infile, const char *outfile,
@@ -68,7 +128,17 @@ int run_parent(const char *infile, const char *outfile,
         return 1;
     }
 
-    int iters = kmeans(img->data, n_pixels, k, labels, centroids, 50);
+    /* Pre-blur image for k-means to reduce noise-driven boundary instability */
+    uint8_t *blur_buf = malloc((size_t)n_pixels * 3);
+    if (!blur_buf) {
+        perror("parent: malloc blur_buf");
+        free(labels); free(centroids); ppm_free(img);
+        return 1;
+    }
+    gaussian_blur_rgb(img->data, blur_buf, W, H);
+
+    int iters = kmeans(blur_buf, n_pixels, k, labels, centroids, 50);
+    free(blur_buf);
     fprintf(stderr, "parent: k-means converged in %d iteration(s)\n", iters);
     free(centroids);
 

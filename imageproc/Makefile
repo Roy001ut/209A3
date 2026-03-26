@@ -39,15 +39,15 @@ tests: $(TEST_PPM) $(TEST_KMEANS) $(TEST_ENHANCE)
 
 # ---- integration test ----
 test: $(TARGET)
-	./$(TARGET) tests/cat.ppm /tmp/out.ppm 3 2
+	./$(TARGET) tests/beatutifulTuotuo.ppm /tmp/out.ppm 3 2
 	@test -f /tmp/out.ppm && echo "PASS: output file exists" || echo "FAIL: no output"
-	@cmp -s tests/cat.ppm /tmp/out.ppm \
+	@cmp -s tests/beatutifulTuotuo.ppm /tmp/out.ppm \
 		&& echo "FAIL: output identical to input" \
 		|| echo "PASS: output differs from input"
 
 valgrind: $(TARGET)
 	valgrind --leak-check=full --track-fds=yes \
-		./$(TARGET) tests/cat.ppm /tmp/val_out.ppm 3 2
+		./$(TARGET) tests/beatutifulTuotuo.ppm /tmp/val_out.ppm 3 2
 
 clean:
 	rm -f $(OBJS) $(TARGET) \

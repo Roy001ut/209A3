@@ -20,8 +20,19 @@
  * lum_mean_out / lum_stddev_out : optional outputs (pass NULL to skip).
  * Stats are computed over owned pixels AFTER equalisation.
  */
+/*
+ * Build a 256-entry equalization LUT from the full image for one cluster.
+ * lut must point to a uint8_t[256] buffer allocated by the caller.
+ * Returns the average luminance of owned pixels (used for skip_histeq check).
+ */
+float histeq_build_lut(const uint8_t *pixels, uint32_t n_pixels,
+                       const uint8_t *mask, uint8_t cluster_id,
+                       uint8_t *lut);
+
+/* blend: 0.0 = no equalization, 1.0 = full equalization */
 void histeq(uint8_t *strip, uint32_t width, uint32_t height,
             const uint8_t *mask, uint8_t cluster_id,
+            float blend, const uint8_t *lut,
             float *lum_mean_out, float *lum_stddev_out);
 
 /*

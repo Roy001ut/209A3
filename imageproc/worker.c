@@ -110,6 +110,15 @@ int run_worker(int job_fd, int result_fd)
         goto send_result;
     }
     float avg_lum_before = avg_luminance(orig, mask, job.cluster_id);
+
+    /* ------------------------------------------------------------------ */
+    /* 4a. Build global equalization LUT for this cluster                 */
+    /* ------------------------------------------------------------------ */
+    uint8_t eq_lut[256];
+    float   cluster_avg_lum = histeq_build_lut(orig->data,
+                                               job.img_width * job.img_height,
+                                               mask, job.cluster_id, eq_lut);
+    uint8_t skip_histeq = (cluster_avg_lum < 40.0f) ? 1 : 0;
     ppm_free(orig);
 
     /* ------------------------------------------------------------------ */
@@ -135,6 +144,8 @@ int run_worker(int job_fd, int result_fd)
         tjob.img_width   = W;
         tjob.img_height  = H;
         tjob.mask_offset = row_start * W;
+        memcpy(tjob.eq_lut, eq_lut, 256);
+        tjob.skip_histeq = skip_histeq;
         strncpy(tjob.infile, job.infile, MAX_PATH - 1);
         snprintf(tjob.tmp_outfile, MAX_PATH,
                  "/tmp/imageproc_%d_c%d_t%u.ppm",
@@ -197,6 +208,8 @@ int run_worker(int job_fd, int result_fd)
         tjob.img_width   = W;
         tjob.img_height  = H;
         tjob.mask_offset = tjob.row_start * W;
+        memcpy(tjob.eq_lut, eq_lut, 256);
+        tjob.skip_histeq = skip_histeq;
         strncpy(tjob.infile, job.infile, MAX_PATH - 1);
         snprintf(tjob.tmp_outfile, MAX_PATH,
                  "/tmp/imageproc_%d_c%d_t%u.ppm",

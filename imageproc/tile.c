@@ -3,6 +3,7 @@
 #include "ppm.h"
 #include "enhance.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -96,9 +97,37 @@ int run_tile(int job_fd, int result_fd)
     float lum_mean   = 0.0f;
     float lum_stddev = 0.0f;
 
-    histeq(strip->data, job.img_width, strip_rows,
-           tile_mask, job.cluster_id,
-           &lum_mean, &lum_stddev);
+    /* EQ_BLEND: 0.0 = no equalization, 1.0 = full (default 1.0) */
+    float eq_blend = 1.0f;
+    const char *blend_env = getenv("EQ_BLEND");
+    if (blend_env) eq_blend = (float)atof(blend_env);
+
+    /* Use global LUT from worker; skip if cluster is too dark */
+    if (!job.skip_histeq) {
+        histeq(strip->data, job.img_width, strip_rows,
+               tile_mask, job.cluster_id,
+               eq_blend, job.eq_lut,
+               &lum_mean, &lum_stddev);
+    } else {
+        /* Dark cluster: compute stats from original pixels, no modification */
+        double sum_lum = 0.0, sum2 = 0.0;
+        uint32_t cnt = 0;
+        for (uint32_t i = 0; i < strip_rows * job.img_width; i++) {
+            if (tile_mask[i] != job.cluster_id) continue;
+            double lv = 0.299*strip->data[i*3+0]
+                      + 0.587*strip->data[i*3+1]
+                      + 0.114*strip->data[i*3+2];
+            sum_lum += lv;
+            sum2    += lv * lv;
+            cnt++;
+        }
+        if (cnt > 0) {
+            lum_mean = (float)(sum_lum / cnt);
+            double var = sum2/cnt - (sum_lum/cnt)*(sum_lum/cnt);
+            if (var < 0.0) var = 0.0;
+            lum_stddev = (float)sqrt(var);
+        }
+    }
 
     /* ------------------------------------------------------------------ */
     /* 8. Write processed strip to tmp_outfile                            */

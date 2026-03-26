@@ -32,6 +32,8 @@ typedef struct {
     uint32_t img_width;
     uint32_t img_height;
     uint32_t mask_offset;       /* byte offset into full mask for this tile */
+    uint8_t  eq_lut[256];       /* pre-computed global equalization LUT */
+    uint8_t  skip_histeq;       /* 1 = cluster avg_lum < 40, skip eq */
     char     infile[MAX_PATH];
     char     tmp_outfile[MAX_PATH];
 } tile_job_t;
