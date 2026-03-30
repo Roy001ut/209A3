@@ -39,32 +39,81 @@ static ssize_t read_all(int fd, void *buf, size_t count)
 }
 
 /* --------------------------------------------------------------------------
+ * send_cmd — write a cmd_t to a worker's cmd pipe
+ * -------------------------------------------------------------------------- */
+static void send_cmd(int cmd_fd, uint8_t type, uint8_t cluster_id,
+                     uint32_t W, uint32_t H, float param,
+                     const char *infile, const char *outfile)
+{
+    cmd_t c;
+    memset(&c, 0, sizeof(c));
+    c.type       = type;
+    c.cluster_id = cluster_id;
+    c.img_width  = W;
+    c.img_height = H;
+    c.param      = param;
+    if (infile)  strncpy(c.infile,  infile,  255);
+    if (outfile) strncpy(c.outfile, outfile, 255);
+    write_all(cmd_fd, &c, sizeof(cmd_t));
+}
+
+/* --------------------------------------------------------------------------
+ * read_resp — read one resp_t; returns 0 on success, -1 on short read.
+ * -------------------------------------------------------------------------- */
+static int read_resp(int resp_fd, resp_t *r)
+{
+    ssize_t nr = read_all(resp_fd, r, sizeof(resp_t));
+    return (nr == (ssize_t)sizeof(resp_t)) ? 0 : -1;
+}
+
+/* --------------------------------------------------------------------------
+ * handle_error_resp — called whenever resp.type == RESP_ERROR.
+ *
+ * Prints the error message, sends CMD_TERMINATE to shut the worker down
+ * cleanly, closes the cmd pipe end, and marks the worker as failed.
+ *
+ * After this returns, the caller must NOT send any further commands to
+ * worker i or read any further responses from it.
+ * -------------------------------------------------------------------------- */
+static void handle_error_resp(int i, const resp_t *r,
+                               int *cmd_pipe_w, int *failed)
+{
+    fprintf(stderr, "parent: worker %d RESP_ERROR: %s\n",
+            i, r->message[0] ? r->message : "(no message)");
+    if (cmd_pipe_w[i] >= 0) {
+        /* Best-effort terminate — worker may already be gone */
+        cmd_t term;
+        memset(&term, 0, sizeof(term));
+        term.type = CMD_TERMINATE;
+        write(cmd_pipe_w[i], &term, sizeof(cmd_t));
+        close(cmd_pipe_w[i]);
+        cmd_pipe_w[i] = -1;
+    }
+    failed[i] = 1;
+}
+
+/* --------------------------------------------------------------------------
  * Gaussian pre-blur for k-means (sigma=1, 5-tap separable kernel)
- * Writes into out_buf (caller allocates, same size as img->data).
- * img->data is never modified.
  * -------------------------------------------------------------------------- */
 static void gaussian_blur_rgb(const uint8_t *src, uint8_t *out_buf,
                                uint32_t W, uint32_t H)
 {
-    /* 5-tap kernel: [1/16, 4/16, 6/16, 4/16, 1/16] */
     static const float K[5] = { 0.0625f, 0.25f, 0.375f, 0.25f, 0.0625f };
-    const int R = 2;  /* kernel half-width */
+    const int R = 2;
 
     uint8_t *tmp = malloc((size_t)W * H * 3);
     if (!tmp) {
-        /* fallback: copy unchanged */
         memcpy(out_buf, src, (size_t)W * H * 3);
         return;
     }
 
-    /* Horizontal pass: src -> tmp */
     for (uint32_t y = 0; y < H; y++) {
         for (uint32_t x = 0; x < W; x++) {
             float acc[3] = {0};
             for (int k = -R; k <= R; k++) {
                 int nx = (int)x + k;
-                if (nx < 0)        nx = 0;
-                if (nx >= (int)W)  nx = (int)W - 1;
+                if (nx < 0)       nx = 0;
+                if (nx >= (int)W) nx = (int)W - 1;
                 float w = K[k + R];
                 acc[0] += w * src[(y * W + (uint32_t)nx) * 3 + 0];
                 acc[1] += w * src[(y * W + (uint32_t)nx) * 3 + 1];
@@ -76,14 +125,13 @@ static void gaussian_blur_rgb(const uint8_t *src, uint8_t *out_buf,
         }
     }
 
-    /* Vertical pass: tmp -> out_buf */
     for (uint32_t y = 0; y < H; y++) {
         for (uint32_t x = 0; x < W; x++) {
             float acc[3] = {0};
             for (int k = -R; k <= R; k++) {
                 int ny = (int)y + k;
-                if (ny < 0)        ny = 0;
-                if (ny >= (int)H)  ny = (int)H - 1;
+                if (ny < 0)       ny = 0;
+                if (ny >= (int)H) ny = (int)H - 1;
                 float w = K[k + R];
                 acc[0] += w * tmp[((uint32_t)ny * W + x) * 3 + 0];
                 acc[1] += w * tmp[((uint32_t)ny * W + x) * 3 + 1];
@@ -104,6 +152,8 @@ static void gaussian_blur_rgb(const uint8_t *src, uint8_t *out_buf,
 int run_parent(const char *infile, const char *outfile,
                int k, int tiles_per_worker)
 {
+    (void)tiles_per_worker;  /* tile count is fixed inside worker (2) */
+
     /* ------------------------------------------------------------------ */
     /* 1. Read input image                                                 */
     /* ------------------------------------------------------------------ */
@@ -113,12 +163,12 @@ int run_parent(const char *infile, const char *outfile,
         return 1;
     }
 
-    uint32_t W = img->width;
-    uint32_t H = img->height;
+    uint32_t W        = img->width;
+    uint32_t H        = img->height;
     uint32_t n_pixels = W * H;
 
     /* ------------------------------------------------------------------ */
-    /* 2. Run k-means                                                     */
+    /* 2. Run k-means                                                      */
     /* ------------------------------------------------------------------ */
     uint8_t *labels    = malloc(n_pixels);
     float   *centroids = malloc((size_t)k * 3 * sizeof(float));
@@ -128,7 +178,6 @@ int run_parent(const char *infile, const char *outfile,
         return 1;
     }
 
-    /* Pre-blur image for k-means to reduce noise-driven boundary instability */
     uint8_t *blur_buf = malloc((size_t)n_pixels * 3);
     if (!blur_buf) {
         perror("parent: malloc blur_buf");
@@ -141,187 +190,324 @@ int run_parent(const char *infile, const char *outfile,
     free(blur_buf);
     fprintf(stderr, "parent: k-means converged in %d iteration(s)\n", iters);
     free(centroids);
+    ppm_free(img);
+    img = NULL;
 
     /* ------------------------------------------------------------------ */
-    /* 3. Create pipes and fork one worker per cluster                    */
+    /* 3. Fork k persistent workers                                        */
     /* ------------------------------------------------------------------ */
-    int    job_pipe_w[8]    = {-1,-1,-1,-1,-1,-1,-1,-1}; /* parent writes */
-    int    result_pipe_r[8] = {-1,-1,-1,-1,-1,-1,-1,-1}; /* parent reads  */
-    pid_t  worker_pids[8]   = {0};
+    int   cmd_pipe_w[8]   = {-1,-1,-1,-1,-1,-1,-1,-1};
+    int   resp_pipe_r[8]  = {-1,-1,-1,-1,-1,-1,-1,-1};
+    pid_t worker_pids[8]  = {0};
+    int   failed[8]       = {0};   /* set to 1 on RESP_ERROR or fork failure */
 
     for (int i = 0; i < k; i++) {
-        int job_pipe[2], result_pipe[2];
-        if (pipe(job_pipe) != 0 || pipe(result_pipe) != 0) {
+        int cp[2], rp[2];
+        if (pipe(cp) != 0 || pipe(rp) != 0) {
             perror("parent: pipe");
-            free(labels); ppm_free(img);
+            free(labels);
             return 1;
         }
 
         pid_t pid = fork();
         if (pid < 0) {
-            perror("parent: fork worker");
-            close(job_pipe[0]); close(job_pipe[1]);
-            close(result_pipe[0]); close(result_pipe[1]);
-            free(labels); ppm_free(img);
+            perror("parent: fork");
+            close(cp[0]); close(cp[1]);
+            close(rp[0]); close(rp[1]);
+            free(labels);
             return 1;
         }
 
         if (pid == 0) {
-            /* ---- child (worker) ---- */
-            close(job_pipe[1]);      /* close write end */
-            close(result_pipe[0]);   /* close read end  */
-
-            /* close all parent-side pipe ends inherited from prior forks */
+            /* child */
+            close(cp[1]);
+            close(rp[0]);
             for (int j = 0; j < i; j++) {
-                if (job_pipe_w[j]    >= 0) close(job_pipe_w[j]);
-                if (result_pipe_r[j] >= 0) close(result_pipe_r[j]);
+                if (cmd_pipe_w[j]  >= 0) close(cmd_pipe_w[j]);
+                if (resp_pipe_r[j] >= 0) close(resp_pipe_r[j]);
             }
-
-            /* free parent-only resources before exec-like call */
             free(labels);
-            ppm_free(img);
-
-            run_worker(job_pipe[0], result_pipe[1]);
-            /* run_worker calls exit() — never returns */
+            run_worker(cp[0], rp[1]);
+            /* never returns */
         }
 
-        /* ---- parent side ---- */
-        close(job_pipe[0]);      /* close read end  — child owns it */
-        close(result_pipe[1]);   /* close write end — child owns it */
-
-        worker_pids[i]    = pid;
-        job_pipe_w[i]     = job_pipe[1];
-        result_pipe_r[i]  = result_pipe[0];
+        /* parent side */
+        close(cp[0]);
+        close(rp[1]);
+        worker_pids[i]  = pid;
+        cmd_pipe_w[i]   = cp[1];
+        resp_pipe_r[i]  = rp[0];
     }
 
     /* ------------------------------------------------------------------ */
-    /* 4. Send layer_job_t + full mask to each worker                     */
+    /* 4. Send CMD_LOAD to all workers (send-all first)                   */
+    /*    Two separate writes: cmd_t struct, then labels mask.            */
     /* ------------------------------------------------------------------ */
     for (int i = 0; i < k; i++) {
-        layer_job_t job;
-        memset(&job, 0, sizeof(job));
-        job.cluster_id  = (uint8_t)i;
-        job.tile_count  = (uint32_t)tiles_per_worker;
-        job.img_width   = W;
-        job.img_height  = H;
-        strncpy(job.infile, infile, MAX_PATH - 1);
-        /* outfile field unused by worker; worker derives its own layer path */
-        strncpy(job.outfile, outfile, MAX_PATH - 1);
-
-        ssize_t nw = write_all(job_pipe_w[i], &job, sizeof(layer_job_t));
-        if (nw != (ssize_t)sizeof(layer_job_t)) {
-            fprintf(stderr, "parent: short write layer_job_t to worker %d\n", i);
-        }
-
-        nw = write_all(job_pipe_w[i], labels, n_pixels);
-        if (nw != (ssize_t)n_pixels) {
-            fprintf(stderr, "parent: short write mask to worker %d\n", i);
-        }
-
-        close(job_pipe_w[i]);
-        job_pipe_w[i] = -1;
+        if (failed[i]) continue;
+        send_cmd(cmd_pipe_w[i], CMD_LOAD, (uint8_t)i, W, H, 0.0f, infile, NULL);
+        write_all(cmd_pipe_w[i], labels, n_pixels);  /* separate write for mask */
     }
 
     /* ------------------------------------------------------------------ */
-    /* 5. Collect layer_result_t from each worker                         */
+    /* 5. Read RESP_READY from all workers (collect-all after)            */
     /* ------------------------------------------------------------------ */
-    layer_result_t results[8];
-    memset(results, 0, sizeof(results));
+    for (int i = 0; i < k; i++) {
+        if (failed[i]) continue;
+        resp_t r;
+        if (read_resp(resp_pipe_r[i], &r) != 0) {
+            fprintf(stderr, "parent: worker %d: pipe error reading RESP_READY\n", i);
+            failed[i] = 1;
+            continue;
+        }
+        if (r.type == RESP_ERROR) {
+            handle_error_resp(i, &r, cmd_pipe_w, failed);
+            continue;
+        }
+        if (r.type != RESP_READY) {
+            fprintf(stderr, "parent: worker %d: expected RESP_READY, got %u\n",
+                    i, (unsigned)r.type);
+            failed[i] = 1;
+        }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 6. Send CMD_ANALYZE to all workers (send-all first)                */
+    /* ------------------------------------------------------------------ */
+    for (int i = 0; i < k; i++) {
+        if (failed[i]) continue;
+        send_cmd(cmd_pipe_w[i], CMD_ANALYZE, (uint8_t)i, W, H, 0.0f, NULL, NULL);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 7. Read RESP_STATS from all workers (collect-all after)            */
+    /* ------------------------------------------------------------------ */
+    resp_t stats[8];
+    memset(stats, 0, sizeof(stats));
 
     for (int i = 0; i < k; i++) {
-        ssize_t nr = read_all(result_pipe_r[i],
-                              &results[i], sizeof(layer_result_t));
-        close(result_pipe_r[i]);
-        result_pipe_r[i] = -1;
-
-        if (nr != (ssize_t)sizeof(layer_result_t)) {
-            fprintf(stderr, "parent: worker %d: EOF before full result "
-                    "(got %zd) — treating as failed\n", i, nr);
-            results[i].status = 2;
+        if (failed[i]) continue;
+        if (read_resp(resp_pipe_r[i], &stats[i]) != 0) {
+            fprintf(stderr, "parent: worker %d: pipe error reading RESP_STATS\n", i);
+            failed[i] = 1;
+            continue;
+        }
+        if (stats[i].type == RESP_ERROR) {
+            handle_error_resp(i, &stats[i], cmd_pipe_w, failed);
         }
     }
 
     /* ------------------------------------------------------------------ */
-    /* 6. Stitch: for each pixel, copy from the owning cluster layer      */
+    /* 8. Decision loop                                                    */
     /* ------------------------------------------------------------------ */
-    ppm_t *output = ppm_alloc(W, H);
-    if (!output) {
-        perror("parent: ppm_alloc output");
-        free(labels); ppm_free(img);
+    int decision[8] = {0};
+
+    printf("=== per-cluster decisions ===\n");
+    for (int i = 0; i < k; i++) {
+        if (failed[i]) {
+            printf("cluster %d: FAILED — skipping\n", i);
+            continue;
+        }
+        float mean   = stats[i].lum_mean;
+        float stddev = stats[i].lum_stddev;
+        const char *desc;
+
+        if (mean < 60.0f) {
+            decision[i] = 0;
+            desc = "BRIGHTEN";
+        } else if (stddev < 15.0f) {
+            decision[i] = 1;
+            desc = "SKIP";
+        } else if (mean >= 200.0f) {
+            decision[i] = 1;
+            desc = "SKIP";
+        } else if (stddev < 40.0f) {
+            decision[i] = 2;
+            desc = "EQUALIZE";
+        } else {
+            decision[i] = 3;
+            desc = "EQUALIZE+SHARPEN";
+        }
+
+        printf("cluster %d: lum=%.1f stddev=%.1f -> %s\n",
+               i, mean, stddev, desc);
+    }
+    fflush(stdout);
+
+    /* ------------------------------------------------------------------ */
+    /* 9. Send decided commands, reading RESP_DONE after each             */
+    /*    A RESP_ERROR at any point marks the worker failed and stops.    */
+    /* ------------------------------------------------------------------ */
+    for (int i = 0; i < k; i++) {
+        if (failed[i]) continue;
+
+        resp_t r;
+
+        switch (decision[i]) {
+
+        case 0: /* BRIGHTEN */
+            send_cmd(cmd_pipe_w[i], CMD_BRIGHTEN, (uint8_t)i,
+                     W, H, 1.4f, NULL, NULL);
+            if (read_resp(resp_pipe_r[i], &r) != 0) { failed[i] = 1; break; }
+            if (r.type == RESP_ERROR) { handle_error_resp(i, &r, cmd_pipe_w, failed); }
+            break;
+
+        case 1: /* SKIP */
+            send_cmd(cmd_pipe_w[i], CMD_SKIP, (uint8_t)i,
+                     W, H, 0.0f, NULL, NULL);
+            if (read_resp(resp_pipe_r[i], &r) != 0) { failed[i] = 1; break; }
+            if (r.type == RESP_ERROR) { handle_error_resp(i, &r, cmd_pipe_w, failed); }
+            break;
+
+        case 2: /* EQUALIZE */
+            send_cmd(cmd_pipe_w[i], CMD_EQUALIZE, (uint8_t)i,
+                     W, H, 0.5f, NULL, NULL);
+            if (read_resp(resp_pipe_r[i], &r) != 0) { failed[i] = 1; break; }
+            if (r.type == RESP_ERROR) { handle_error_resp(i, &r, cmd_pipe_w, failed); }
+            break;
+
+        case 3: /* EQUALIZE then SHARPEN */
+            send_cmd(cmd_pipe_w[i], CMD_EQUALIZE, (uint8_t)i,
+                     W, H, 0.5f, NULL, NULL);
+            if (read_resp(resp_pipe_r[i], &r) != 0) { failed[i] = 1; break; }
+            if (r.type == RESP_ERROR) { handle_error_resp(i, &r, cmd_pipe_w, failed); break; }
+            send_cmd(cmd_pipe_w[i], CMD_SHARPEN, (uint8_t)i,
+                     W, H, 1.2f, NULL, NULL);
+            if (read_resp(resp_pipe_r[i], &r) != 0) { failed[i] = 1; break; }
+            if (r.type == RESP_ERROR) { handle_error_resp(i, &r, cmd_pipe_w, failed); }
+            break;
+        }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 10. Send CMD_SAVE to all non-failed workers (send-all first)       */
+    /* ------------------------------------------------------------------ */
+    char layer_files[8][MAX_PATH];
+    for (int i = 0; i < k; i++) {
+        snprintf(layer_files[i], MAX_PATH,
+                 "/tmp/imageproc_%d_layer%d.ppm", (int)getpid(), i);
+        if (failed[i]) continue;
+        send_cmd(cmd_pipe_w[i], CMD_SAVE, (uint8_t)i,
+                 W, H, 0.0f, NULL, layer_files[i]);
+    }
+
+    /* Read RESP_DONE from all workers after CMD_SAVE */
+    int save_ok[8] = {0};
+    for (int i = 0; i < k; i++) {
+        if (failed[i]) continue;
+        resp_t r;
+        if (read_resp(resp_pipe_r[i], &r) != 0) {
+            fprintf(stderr, "parent: worker %d: pipe error reading CMD_SAVE resp\n", i);
+            failed[i] = 1;
+            continue;
+        }
+        if (r.type == RESP_ERROR) {
+            handle_error_resp(i, &r, cmd_pipe_w, failed);
+            continue;
+        }
+        if (r.type == RESP_DONE && r.status == 0)
+            save_ok[i] = 1;
+        else
+            fprintf(stderr, "parent: worker %d CMD_SAVE failed (status=%u)\n",
+                    i, (unsigned)r.status);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 11. Send CMD_TERMINATE to all non-already-terminated workers       */
+    /* ------------------------------------------------------------------ */
+    for (int i = 0; i < k; i++) {
+        if (cmd_pipe_w[i] < 0) continue;  /* already closed by handle_error_resp */
+        send_cmd(cmd_pipe_w[i], CMD_TERMINATE, (uint8_t)i,
+                 W, H, 0.0f, NULL, NULL);
+        close(cmd_pipe_w[i]);
+        cmd_pipe_w[i] = -1;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 12. waitpid all workers                                            */
+    /* ------------------------------------------------------------------ */
+    for (int i = 0; i < k; i++) {
+        if (worker_pids[i] > 0)
+            waitpid(worker_pids[i], NULL, 0);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 13. Stitch layers                                                   */
+    /* ------------------------------------------------------------------ */
+    ppm_t *orig = ppm_read(infile);
+    if (!orig) {
+        fprintf(stderr, "parent: cannot re-read input for stitch: %s\n", infile);
+        free(labels);
         return 1;
     }
 
-    /* Pre-fill output with original image pixels as fallback */
-    memcpy(output->data, img->data, (size_t)n_pixels * 3);
+    ppm_t *output = ppm_alloc(W, H);
+    if (!output) {
+        perror("parent: ppm_alloc output");
+        ppm_free(orig); free(labels);
+        return 1;
+    }
+    memcpy(output->data, orig->data, (size_t)n_pixels * 3);
+    ppm_free(orig);
 
-    /* Load each layer file and copy owned pixels */
     for (int i = 0; i < k; i++) {
-        if (results[i].status == 2) {
+        if (!save_ok[i]) {
             fprintf(stderr, "parent: cluster %d failed — skipping layer\n", i);
             continue;
         }
 
-        ppm_t *layer = ppm_read(results[i].layer_file);
+        ppm_t *layer = ppm_read(layer_files[i]);
         if (!layer) {
-            fprintf(stderr, "parent: cannot read layer file: %s\n",
-                    results[i].layer_file);
+            fprintf(stderr, "parent: cannot read layer file: %s\n", layer_files[i]);
             continue;
         }
 
         for (uint32_t p = 0; p < n_pixels; p++) {
             if (labels[p] == (uint8_t)i) {
-                output->data[p*3 + 0] = layer->data[p*3 + 0];
-                output->data[p*3 + 1] = layer->data[p*3 + 1];
-                output->data[p*3 + 2] = layer->data[p*3 + 2];
+                output->data[p*3+0] = layer->data[p*3+0];
+                output->data[p*3+1] = layer->data[p*3+1];
+                output->data[p*3+2] = layer->data[p*3+2];
             }
         }
         ppm_free(layer);
-
-        /* Clean up layer temp file */
-        unlink(results[i].layer_file);
+        unlink(layer_files[i]);
     }
 
     /* ------------------------------------------------------------------ */
-    /* 7. Write final output                                              */
+    /* 14. Write final output PPM                                          */
     /* ------------------------------------------------------------------ */
     if (ppm_write(output, outfile) != 0) {
         fprintf(stderr, "parent: failed to write output: %s\n", outfile);
-        ppm_free(output); ppm_free(img); free(labels);
+        ppm_free(output); free(labels);
         return 1;
     }
     ppm_free(output);
 
     /* ------------------------------------------------------------------ */
-    /* 8. waitpid all workers                                             */
-    /* ------------------------------------------------------------------ */
-    for (int i = 0; i < k; i++) {
-        if (worker_pids[i] > 0) {
-            int wstatus;
-            waitpid(worker_pids[i], &wstatus, 0);
-        }
-    }
-
-    /* ------------------------------------------------------------------ */
-    /* 9. Print summary                                                   */
+    /* 15. Print summary                                                   */
     /* ------------------------------------------------------------------ */
     fprintf(stderr, "\n=== imageproc summary ===\n");
     fprintf(stderr, "  Input : %s  (%ux%u)\n", infile, W, H);
     fprintf(stderr, "  Output: %s\n", outfile);
-    fprintf(stderr, "  k=%d  tiles_per_worker=%d\n\n", k, tiles_per_worker);
+    fprintf(stderr, "  k=%d\n\n", k);
     for (int i = 0; i < k; i++) {
-        const char *s = results[i].status == 0 ? "OK"
-                      : results[i].status == 1 ? "PARTIAL"
-                      :                          "FAILED";
-        fprintf(stderr, "  cluster %d: %s  pixels=%u  "
-                "lum %.1f -> %.1f  tiles_ok=%u\n",
-                i, s,
-                results[i].pixels_total,
-                results[i].avg_lum_before,
-                results[i].avg_lum_after,
-                results[i].tiles_ok);
+        static const char *dnames[] = {"BRIGHTEN","SKIP","EQUALIZE","EQUALIZE+SHARPEN"};
+        if (failed[i] && !save_ok[i]) {
+            fprintf(stderr, "  cluster %d: FAILED\n", i);
+        } else {
+            fprintf(stderr, "  cluster %d: %s  pixels=%u  lum=%.1f stddev=%.1f\n",
+                    i, dnames[decision[i]],
+                    stats[i].pixel_count,
+                    stats[i].lum_mean,
+                    stats[i].lum_stddev);
+        }
+    }
+
+    /* Close any still-open resp pipe read ends */
+    for (int i = 0; i < k; i++) {
+        if (resp_pipe_r[i] >= 0) close(resp_pipe_r[i]);
     }
 
     free(labels);
-    ppm_free(img);
     return 0;
 }

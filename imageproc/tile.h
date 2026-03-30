@@ -8,8 +8,10 @@
  * result_fd : write end of pipe for tile_result_t
  *
  * Reads job struct, reads mask slice, loads its row strip from disk,
- * applies histogram equalisation to owned pixels, writes the processed
- * strip back to disk, then sends tile_result_t and exits.
+ * then dispatches on job.operation:
+ *   TILE_OP_HISTEQ  — applies histogram equalisation to owned pixels
+ *   TILE_OP_SHARPEN — applies unsharp mask to owned pixels
+ * Writes the processed strip to disk, sends tile_result_t, and exits.
  *
  * Returns 0 on success, 1 on error (but normally calls exit() directly).
  */

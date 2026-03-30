@@ -10,9 +10,7 @@
 #include <unistd.h>
 
 /* --------------------------------------------------------------------------
- * Robust pipe read: keeps reading until all `count` bytes are received,
- * or EOF / error occurs.
- * Returns total bytes read (< count means EOF/error).
+ * Robust pipe read
  * -------------------------------------------------------------------------- */
 static ssize_t read_all(int fd, void *buf, size_t count)
 {
@@ -20,8 +18,8 @@ static ssize_t read_all(int fd, void *buf, size_t count)
     uint8_t *p   = (uint8_t *)buf;
     while (done < count) {
         ssize_t n = read(fd, p + done, count - done);
-        if (n < 0) { perror("read_all"); return (ssize_t)done; }
-        if (n == 0) break;  /* EOF */
+        if (n < 0) { perror("tile read_all"); return (ssize_t)done; }
+        if (n == 0) break;
         done += (size_t)n;
     }
     return (ssize_t)done;
@@ -49,8 +47,8 @@ int run_tile(int job_fd, int result_fd)
     /* ------------------------------------------------------------------ */
     /* 2. Read mask slice                                                  */
     /* ------------------------------------------------------------------ */
-    uint32_t strip_rows  = job.row_end - job.row_start;
-    uint32_t mask_bytes  = strip_rows * job.img_width;
+    uint32_t strip_rows = job.row_end - job.row_start;
+    uint32_t mask_bytes = strip_rows * job.img_width;
 
     uint8_t *tile_mask = malloc(mask_bytes);
     if (!tile_mask) {
@@ -84,11 +82,8 @@ int run_tile(int job_fd, int result_fd)
     }
 
     /* ------------------------------------------------------------------ */
-    /* 4+5+6+7. Histogram equalisation on owned pixels                    */
-    /* Also collects lum_mean and lum_stddev over owned pixels.           */
+    /* 4. Count owned pixels                                               */
     /* ------------------------------------------------------------------ */
-
-    /* Count owned pixels for result */
     uint32_t n_owned = 0;
     for (uint32_t i = 0; i < strip_rows * job.img_width; i++) {
         if (tile_mask[i] == job.cluster_id) n_owned++;
@@ -97,40 +92,57 @@ int run_tile(int job_fd, int result_fd)
     float lum_mean   = 0.0f;
     float lum_stddev = 0.0f;
 
-    /* EQ_BLEND: 0.0 = no equalization, 1.0 = full (default 1.0) */
-    float eq_blend = 1.0f;
-    const char *blend_env = getenv("EQ_BLEND");
-    if (blend_env) eq_blend = (float)atof(blend_env);
-
-    /* Use global LUT from worker; skip if cluster is too dark */
-    if (!job.skip_histeq) {
+    /* ------------------------------------------------------------------ */
+    /* 5. Dispatch on operation                                            */
+    /* ------------------------------------------------------------------ */
+    if (job.operation == TILE_OP_HISTEQ) {
+        /* Histogram equalisation using pre-built LUT from worker */
         histeq(strip->data, job.img_width, strip_rows,
                tile_mask, job.cluster_id,
-               eq_blend, job.eq_lut,
+               job.param, job.eq_lut,
                &lum_mean, &lum_stddev);
-    } else {
-        /* Dark cluster: compute stats from original pixels, no modification */
-        double sum_lum = 0.0, sum2 = 0.0;
-        uint32_t cnt = 0;
-        for (uint32_t i = 0; i < strip_rows * job.img_width; i++) {
-            if (tile_mask[i] != job.cluster_id) continue;
-            double lv = 0.299*strip->data[i*3+0]
-                      + 0.587*strip->data[i*3+1]
-                      + 0.114*strip->data[i*3+2];
-            sum_lum += lv;
-            sum2    += lv * lv;
-            cnt++;
-        }
-        if (cnt > 0) {
-            lum_mean = (float)(sum_lum / cnt);
-            double var = sum2/cnt - (sum_lum/cnt)*(sum_lum/cnt);
+    } else if (job.operation == TILE_OP_SHARPEN) {
+        /* Unsharp mask — need full-size layer ppm_t for unsharp_mask(),
+         * but we only have a strip.  Build a temporary ppm_t wrapper
+         * that covers only this strip (mask coords are strip-local).   */
+        ppm_t strip_img;
+        strip_img.width  = job.img_width;
+        strip_img.height = strip_rows;
+        strip_img.data   = strip->data;
+        unsharp_mask(&strip_img, tile_mask, job.cluster_id, job.param, 2);
+
+        /* Compute lum stats after sharpening */
+        if (n_owned > 0) {
+            double sum = 0.0, sum2 = 0.0;
+            for (uint32_t i = 0; i < strip_rows * job.img_width; i++) {
+                if (tile_mask[i] != job.cluster_id) continue;
+                double lv = 0.299 * strip->data[i*3+0]
+                          + 0.587 * strip->data[i*3+1]
+                          + 0.114 * strip->data[i*3+2];
+                sum  += lv;
+                sum2 += lv * lv;
+            }
+            double mean = sum / n_owned;
+            double var  = sum2 / n_owned - mean * mean;
             if (var < 0.0) var = 0.0;
+            lum_mean   = (float)mean;
             lum_stddev = (float)sqrt(var);
         }
+    } else {
+        fprintf(stderr, "tile: unknown operation %u\n", (unsigned)job.operation);
+        ppm_free(strip);
+        free(tile_mask);
+        result.status = 1;
+        goto send_result;
     }
 
     /* ------------------------------------------------------------------ */
-    /* 8. Write processed strip to tmp_outfile                            */
+    /* 6. Compute output_variance (variance of luminance over owned px)   */
+    /* ------------------------------------------------------------------ */
+    float output_variance = lum_stddev * lum_stddev;
+
+    /* ------------------------------------------------------------------ */
+    /* 7. Write processed strip to tmp_outfile                            */
     /* ------------------------------------------------------------------ */
     if (ppm_write_strip(strip, job.tmp_outfile, 0, strip_rows) != 0) {
         fprintf(stderr, "tile: ppm_write_strip failed for %s\n",
@@ -142,13 +154,14 @@ int run_tile(int job_fd, int result_fd)
     }
 
     /* ------------------------------------------------------------------ */
-    /* 9. Build and send tile_result_t                                    */
+    /* 8. Build result                                                     */
     /* ------------------------------------------------------------------ */
-    result.status       = 0;
-    result.rows_written = strip_rows;
-    result.pixels_owned = n_owned;
-    result.lum_mean     = lum_mean;
-    result.lum_stddev   = lum_stddev;
+    result.status          = 0;
+    result.rows_written    = strip_rows;
+    result.pixels_owned    = n_owned;
+    result.lum_mean        = lum_mean;
+    result.lum_stddev      = lum_stddev;
+    result.output_variance = output_variance;
     strncpy(result.tmp_outfile, job.tmp_outfile, MAX_PATH - 1);
     result.tmp_outfile[MAX_PATH - 1] = '\0';
 
