@@ -19,7 +19,7 @@ void dump_hex(const char *label, const void *data, size_t size) {
 int main() {
     printf("=== imageproc IPC DATA FLOW TRACE ===\n\n");
 
-    /* 1. Show cmd_t layout */
+    /* Generate and display cmd_t payload */
     cmd_t cmd;
     memset(&cmd, 0, sizeof(cmd));
     cmd.type = CMD_LOAD;
@@ -35,7 +35,7 @@ int main() {
     printf("  - File: %s\n", cmd.infile);
     dump_hex("Binary Packet (cmd_t)", &cmd, sizeof(cmd_t));
 
-    /* 2. Show resp_t layout */
+    /* Generate and display resp_t payload */
     resp_t resp;
     memset(&resp, 0, sizeof(resp));
     resp.type = RESP_STATS;
@@ -51,7 +51,7 @@ int main() {
     printf("  - Count: %u\n", resp.pixel_count);
     dump_hex("Binary Packet (resp_t)", &resp, sizeof(resp_t));
 
-    /* 3. Show tile_job_t layout */
+    /* Generate and display tile_job_t payload */
     tile_job_t job;
     memset(&job, 0, sizeof(job));
     job.operation = TILE_OP_SHARPEN;

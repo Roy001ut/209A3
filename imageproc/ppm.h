@@ -21,19 +21,13 @@ ppm_t *ppm_alloc(uint32_t width, uint32_t height);
 /* Free a ppm_t and its pixel data. */
 void   ppm_free(ppm_t *img);
 
-/*
- * Write rows [row_start, row_end) of img to path as a strip PPM.
- * The strip header uses height = (row_end - row_start), not img->height.
- * Returns 0 on success, -1 on error.
- */
+/* Write row range [row_start, row_end) to a strip PPM file.
+ * Returns 0 on success, -1 on error. */
 int    ppm_write_strip(const ppm_t *img, const char *path,
                        uint32_t row_start, uint32_t row_end);
 
-/*
- * Read rows [row_start, row_end) from a strip PPM file written by
- * ppm_write_strip. width must match the strip's width.
- * Returns a ppm_t with height = (row_end - row_start), or NULL on error.
- */
+/* Read a strip PPM file, expecting a specific total width and row range.
+ * Returns a new ppm_t with height = (row_end - row_start), or NULL on error. */
 ppm_t *ppm_read_strip(const char *path, uint32_t width,
                       uint32_t row_start, uint32_t row_end);
 

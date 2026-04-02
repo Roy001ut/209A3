@@ -14,7 +14,7 @@ static int tests_passed = 0;
     else       { printf("  FAIL: %s  (line %d)\n", msg, __LINE__); } \
 } while(0)
 
-/* ---- helpers ---- */
+/* Test helper functions */
 static uint8_t *make_grey_strip(uint32_t n, uint8_t v)
 {
     uint8_t *p = malloc(n * 3);
@@ -42,7 +42,7 @@ static uint8_t *all_owned_mask(uint32_t n, uint8_t cid)
     return m;
 }
 
-/* ---- Test 1: flat grey — histeq must not crash, values stay uint8 ---- */
+/* Test 1: flat grey image (histeq must not crash, values stay within bounds) */
 static void test_flat_grey_eq(void)
 {
     printf("Test 1: flat grey image — histeq no crash, values in [0,255]\n");
@@ -67,7 +67,7 @@ static void test_flat_grey_eq(void)
     free(mask);
 }
 
-/* ---- Test 2: low-contrast ramp [100..120] — range expands after eq ---- */
+/* Test 2: low-contrast ramp (range should expand after histeq) */
 static void test_low_contrast_eq(void)
 {
     printf("Test 2: low-contrast [100..120] — range expands after histeq\n");
@@ -96,7 +96,7 @@ static void test_low_contrast_eq(void)
     free(mask);
 }
 
-/* ---- Test 3: unsharp mask on uniform layer — no pixel changes ---- */
+/* Test 3: unsharp mask on uniform layer should not change pixels */
 static void test_unsharp_uniform(void)
 {
     printf("Test 3: unsharp mask on uniform grey layer — no pixel change\n");

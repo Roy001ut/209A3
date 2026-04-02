@@ -6,9 +6,7 @@
 #define MAX_PATH   256
 #define MAX_PIXELS (4096 * 4096)   /* hard ceiling for mask alloc */
 
-/* ------------------------------------------------------------------
- * Parent -> Worker commands
- * ------------------------------------------------------------------ */
+/* Parent -> Worker commands */
 #define CMD_LOAD      1
 #define CMD_ANALYZE   2
 #define CMD_BRIGHTEN  3
@@ -30,9 +28,7 @@ typedef struct {
     char     outfile[256];  /* CMD_SAVE: path to write layer PPM */
 } cmd_t;
 
-/* ------------------------------------------------------------------
- * Worker -> Parent responses
- * ------------------------------------------------------------------ */
+/* Worker -> Parent responses */
 #define RESP_READY  1
 #define RESP_STATS  2
 #define RESP_DONE   3
@@ -48,12 +44,10 @@ typedef struct {
     char     message[64];   /* RESP_ERROR: description */
 } resp_t;
 
-/* ------------------------------------------------------------------
- * Worker -> Tile job
+/* Worker -> Tile job
  * Sent as two writes:
- *   write(fd, &job, sizeof(tile_job_t))
- *   write(fd, mask_slice, (row_end - row_start) * img_width)
- * ------------------------------------------------------------------ */
+ *   1. write(fd, &job, sizeof(tile_job_t))
+ *   2. write(fd, mask_slice, (row_end - row_start) * img_width) */
 #define TILE_OP_HISTEQ  1
 #define TILE_OP_SHARPEN 2
 
@@ -71,9 +65,7 @@ typedef struct {
     char     tmp_outfile[MAX_PATH];
 } tile_job_t;
 
-/* ------------------------------------------------------------------
- * Tile -> Worker result
- * ------------------------------------------------------------------ */
+/* Tile -> Worker result */
 typedef struct {
     uint8_t  status;            /* 0=ok, 1=error */
     uint32_t rows_written;

@@ -11,9 +11,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-/* --------------------------------------------------------------------------
- * Robust pipe I/O helpers
- * -------------------------------------------------------------------------- */
+/* Robust pipe I/O helpers */
 static ssize_t read_all(int fd, void *buf, size_t count)
 {
     size_t   done = 0;
@@ -39,9 +37,7 @@ static ssize_t write_all(int fd, const void *buf, size_t count)
     return (ssize_t)done;
 }
 
-/* --------------------------------------------------------------------------
- * send_resp — write a resp_t to resp_fd
- * -------------------------------------------------------------------------- */
+/* Send response message */
 static void send_resp(int resp_fd, uint8_t type, uint8_t status)
 {
     resp_t r;
@@ -51,21 +47,8 @@ static void send_resp(int resp_fd, uint8_t type, uint8_t status)
     write_all(resp_fd, &r, sizeof(resp_t));
 }
 
-/* --------------------------------------------------------------------------
- * fork_tiles — fork tile_count tile subprocesses for one operation.
- *
- * operation : TILE_OP_HISTEQ or TILE_OP_SHARPEN
- * param     : blend ratio (histeq) or amount (sharpen)
- * pixels    : full image pixel array (RGB, width*height*3 bytes)
- * mask      : full label array (width*height bytes)
- * cluster_id, W, H, infile : image metadata
- * eq_lut    : pre-built LUT (used only for TILE_OP_HISTEQ)
- * tile_count: number of tiles to fork
- *
- * On success, stitches processed strips back into pixels[] and returns
- * the mean output_variance across tiles (quality metric).
- * Returns -1.0f on fatal error.
- * -------------------------------------------------------------------------- */
+/* Fork tile worker processes to process sections of the image in parallel.
+ * Returns the mean output variance on success, or -1.0f on error. */
 static float fork_tiles(uint8_t operation, float param,
                         uint8_t *pixels, const uint8_t *mask,
                         uint8_t cluster_id, uint32_t W, uint32_t H,
@@ -76,7 +59,7 @@ static float fork_tiles(uint8_t operation, float param,
     int   tile_job_w[8]       = {-1,-1,-1,-1,-1,-1,-1,-1};
     int   tile_result_r[8]    = {-1,-1,-1,-1,-1,-1,-1,-1};
 
-    /* ---- fork all tiles ---- */
+    /* Fork tile processes */
     for (uint32_t t = 0; t < tile_count; t++) {
         uint32_t row_start = t * (H / tile_count);
         uint32_t row_end   = (t == tile_count - 1) ? H : (t + 1) * (H / tile_count);
@@ -129,7 +112,7 @@ static float fork_tiles(uint8_t operation, float param,
         tile_result_r[t] = rp[0];
     }
 
-    /* ---- send tile_job_t + mask slice to each tile ---- */
+    /* Send job specs and mask slices to tiles */
     for (uint32_t t = 0; t < tile_count; t++) {
         uint32_t row_start  = t * (H / tile_count);
         uint32_t row_end    = (t == tile_count - 1) ? H : (t + 1) * (H / tile_count);
@@ -159,7 +142,7 @@ static float fork_tiles(uint8_t operation, float param,
         tile_job_w[t] = -1;
     }
 
-    /* ---- collect tile_result_t ---- */
+    /* Read results from each tile */
     tile_result_t tresults[8];
     memset(tresults, 0, sizeof(tresults));
 
@@ -174,7 +157,7 @@ static float fork_tiles(uint8_t operation, float param,
         }
     }
 
-    /* ---- stitch strips back into pixels[] ---- */
+    /* Merge processed strips back into main pixel buffer */
     printf("[Worker %d] stitch; waitpid()\n", cluster_id);
     fflush(stdout);
     for (uint32_t t = 0; t < tile_count; t++) {
@@ -208,13 +191,13 @@ static float fork_tiles(uint8_t operation, float param,
         unlink(tresults[t].tmp_outfile);
     }
 
-    /* ---- waitpid ---- */
+    /* Wait for tile processes to exit */
     for (uint32_t t = 0; t < tile_count; t++) {
         if (tile_pids[t] > 0)
             waitpid(tile_pids[t], NULL, 0);
     }
 
-    /* ---- compute mean output_variance ---- */
+    /* Calculate overall quality score */
     float total_var = 0.0f;
     uint32_t good   = 0;
     for (uint32_t t = 0; t < tile_count; t++) {
@@ -226,9 +209,7 @@ static float fork_tiles(uint8_t operation, float param,
     return (good > 0) ? total_var / good : 0.0f;
 }
 
-/* --------------------------------------------------------------------------
- * run_worker — persistent command loop
- * -------------------------------------------------------------------------- */
+/* Persistent worker event loop */
 int run_worker(int cmd_fd, int resp_fd)
 {
     /* Persistent state across commands */
@@ -256,7 +237,7 @@ int run_worker(int cmd_fd, int resp_fd)
 
         switch (cmd.type) {
 
-        /* ---------------------------------------------------------------- */
+
         case CMD_LOAD: {
             /* Free any previous state */
             free(pixels); pixels = NULL;
@@ -310,7 +291,7 @@ int run_worker(int cmd_fd, int resp_fd)
             break;
         }
 
-        /* ---------------------------------------------------------------- */
+
         case CMD_ANALYZE: {
             resp_t r;
             memset(&r, 0, sizeof(r));
@@ -350,7 +331,7 @@ int run_worker(int cmd_fd, int resp_fd)
             break;
         }
 
-        /* ---------------------------------------------------------------- */
+
         case CMD_BRIGHTEN: {
             if (!pixels || !mask) {
                 send_resp(resp_fd, RESP_DONE, 1);
@@ -371,7 +352,7 @@ int run_worker(int cmd_fd, int resp_fd)
             break;
         }
 
-        /* ---------------------------------------------------------------- */
+
         case CMD_EQUALIZE: {
             if (!pixels || !mask) {
                 send_resp(resp_fd, RESP_DONE, 1);
@@ -399,7 +380,7 @@ int run_worker(int cmd_fd, int resp_fd)
             break;
         }
 
-        /* ---------------------------------------------------------------- */
+
         case CMD_SHARPEN: {
             if (!pixels || !mask) {
                 send_resp(resp_fd, RESP_DONE, 1);
@@ -421,14 +402,14 @@ int run_worker(int cmd_fd, int resp_fd)
             break;
         }
 
-        /* ---------------------------------------------------------------- */
+
         case CMD_SKIP:
             printf("[Worker %d] -> [Parent]: RESP_DONE\n", cluster_id);
             fflush(stdout);
             send_resp(resp_fd, RESP_DONE, 0);
             break;
 
-        /* ---------------------------------------------------------------- */
+
         case CMD_SAVE: {
             if (!pixels) {
                 send_resp(resp_fd, RESP_DONE, 1);
@@ -460,7 +441,7 @@ int run_worker(int cmd_fd, int resp_fd)
             break;
         }
 
-        /* ---------------------------------------------------------------- */
+
         case CMD_TERMINATE:
             printf("[Worker %d] free(); exit(0)\n", cluster_id);
             fflush(stdout);
@@ -470,7 +451,7 @@ int run_worker(int cmd_fd, int resp_fd)
             close(resp_fd);
             exit(0);
 
-        /* ---------------------------------------------------------------- */
+
         default:
             fprintf(stderr, "worker: unknown cmd type %u\n",
                     (unsigned)cmd.type);

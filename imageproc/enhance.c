@@ -6,9 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* --------------------------------------------------------------------------
- * Internal helpers
- * -------------------------------------------------------------------------- */
+/* Internal helpers */
 
 static inline uint8_t clamp_u8(int v)
 {
@@ -23,14 +21,9 @@ static inline float lum_f(uint8_t r, uint8_t g, uint8_t b)
     return 0.299f * r + 0.587f * g + 0.114f * b;
 }
 
-/* --------------------------------------------------------------------------
- * Histogram equalisation
- * -------------------------------------------------------------------------- */
+/* Histogram equalization */
 
-/*
- * Build a global 256-entry LUT from all owned pixels in the full image.
- * Returns the average luminance of owned pixels.
- */
+/* Build 256-entry lookup table for equalization, returning average luminance. */
 float histeq_build_lut(const uint8_t *pixels, uint32_t n_pixels,
                        const uint8_t *mask, uint8_t cluster_id,
                        uint8_t *lut)
@@ -93,7 +86,7 @@ void histeq(uint8_t *strip, uint32_t width, uint32_t height,
         return;
     }
 
-    /* --- Apply LUT via luminance scaling --- */
+    /* Apply scaling via lookup table */
     for (uint32_t i = 0; i < n_pixels; i++) {
         if (mask[i] != cluster_id) continue;
 
@@ -113,7 +106,7 @@ void histeq(uint8_t *strip, uint32_t width, uint32_t height,
         strip[i*3 + 2] = clamp_u8((int)(b * scale + 0.5f));
     }
 
-    /* --- Compute lum stats over owned pixels AFTER equalisation --- */
+    /* Calculate resulting luminance statistics */
     if (lum_mean_out || lum_stddev_out) {
         double sum  = 0.0;
         double sum2 = 0.0;
@@ -132,9 +125,7 @@ void histeq(uint8_t *strip, uint32_t width, uint32_t height,
     }
 }
 
-/* --------------------------------------------------------------------------
- * Unsharp mask
- * -------------------------------------------------------------------------- */
+/* Unsharp masking */
 
 void unsharp_mask(ppm_t *layer, const uint8_t *mask, uint8_t cluster_id,
                   float amount, int radius)
@@ -151,7 +142,7 @@ void unsharp_mask(ppm_t *layer, const uint8_t *mask, uint8_t cluster_id,
     }
     memcpy(blurred, data, (size_t)W * H * 3);
 
-    /* --- Box blur over same-cluster neighbours only --- */
+    /* Apply box blur using only pixels from the same cluster */
     for (uint32_t y = 0; y < H; y++) {
         for (uint32_t x = 0; x < W; x++) {
             uint32_t idx = y * W + x;
@@ -187,7 +178,7 @@ void unsharp_mask(ppm_t *layer, const uint8_t *mask, uint8_t cluster_id,
         }
     }
 
-    /* --- Sharpen: original + amount * (original - blurred) --- */
+    /* Sharpen by extracting high frequencies (original - blurred) */
     /* Pixels within radius of a cluster boundary get half strength.       */
     for (uint32_t i = 0; i < W * H; i++) {
         if (mask[i] != cluster_id) continue;
@@ -217,9 +208,7 @@ void unsharp_mask(ppm_t *layer, const uint8_t *mask, uint8_t cluster_id,
     free(blurred);
 }
 
-/* --------------------------------------------------------------------------
- * Strength calibration
- * -------------------------------------------------------------------------- */
+/* Strength calibration */
 
 float calibrate_strength(float avg_lum_stddev)
 {

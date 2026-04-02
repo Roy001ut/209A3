@@ -12,7 +12,7 @@ static int tests_passed = 0;
     else       { printf("  FAIL: %s  (line %d)\n", msg, __LINE__); } \
 } while(0)
 
-/* ---- helper: build a 4x4 test image with known pixel values ---- */
+/* Helper: Generate a 4x4 test image with known pixels */
 static ppm_t *make_4x4(void)
 {
     ppm_t *img = ppm_alloc(4, 4);
@@ -25,7 +25,7 @@ static ppm_t *make_4x4(void)
     return img;
 }
 
-/* ---- Test 1: write full image, read back, compare pixel-by-pixel ---- */
+/* Test 1: Verifies full image write and read roundtrip */
 static void test_write_read_roundtrip(void)
 {
     printf("Test 1: full image write/read roundtrip\n");
@@ -53,7 +53,7 @@ static void test_write_read_roundtrip(void)
     ppm_free(orig);
 }
 
-/* ---- Test 2: write strip (rows 1-2 of 4x4), read strip, verify ---- */
+/* Test 2: Verifies strip writing and reading */
 static void test_strip_write_read(void)
 {
     printf("Test 2: strip write/read (rows 1-2 of 4x4)\n");

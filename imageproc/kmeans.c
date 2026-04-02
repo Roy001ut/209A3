@@ -6,11 +6,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* --------------------------------------------------------------------------
- * Internal helpers
- * -------------------------------------------------------------------------- */
+/* Internal helpers */
 
-/* Squared L2 distance between a pixel (3 uint8_t) and a centroid (3 float). */
+/* Squared L2 distance between a pixel and a centroid */
 static float sq_dist(const uint8_t *px, const float *c)
 {
     float dr = (float)px[0] - c[0];
@@ -19,10 +17,8 @@ static float sq_dist(const uint8_t *px, const float *c)
     return dr*dr + dg*dg + db*db;
 }
 
-/*
- * Assign each pixel to its nearest centroid.
- * Returns 1 if any label changed, 0 if converged.
- */
+/* Assign each pixel to nearest centroid.
+ * Returns 1 if any label changed, 0 otherwise. */
 static int assign(const uint8_t *pixels, uint32_t n_pixels, int k,
                   const float *centroids, uint8_t *labels)
 {
@@ -46,10 +42,8 @@ static int assign(const uint8_t *pixels, uint32_t n_pixels, int k,
     return changed;
 }
 
-/*
- * Recompute each centroid as the mean of its assigned pixels.
- * Detects empty clusters and returns a bitmask of empty cluster indices.
- */
+/* Update centroids to the mean of their assigned pixels.
+ * Returns a bitmask of empty clusters. */
 static uint8_t update(const uint8_t *pixels, uint32_t n_pixels, int k,
                       const uint8_t *labels, float *centroids)
 {
@@ -77,10 +71,7 @@ static uint8_t update(const uint8_t *pixels, uint32_t n_pixels, int k,
     return empty_mask;
 }
 
-/*
- * For each empty cluster in empty_mask, reinitialise its centroid to the
- * pixel that is furthest from any current (non-empty) centroid.
- */
+/* Reinitialise empty clusters to the pixel furthest from existing centroids. */
 static void fix_empty(const uint8_t *pixels, uint32_t n_pixels, int k,
                       uint8_t empty_mask, float *centroids)
 {
@@ -115,9 +106,7 @@ static void fix_empty(const uint8_t *pixels, uint32_t n_pixels, int k,
     }
 }
 
-/* --------------------------------------------------------------------------
- * Public API
- * -------------------------------------------------------------------------- */
+/* Public API */
 
 int kmeans(const uint8_t *pixels, uint32_t n_pixels, int k,
            uint8_t *labels, float *centroids, int max_iter)
@@ -128,7 +117,7 @@ int kmeans(const uint8_t *pixels, uint32_t n_pixels, int k,
     if ((uint32_t)k > n_pixels)
         k = (int)n_pixels;
 
-    /* --- Initialise centroids: evenly spaced pixel indices --- */
+    /* Initialize centroids to evenly spaced pixels */
     for (int c = 0; c < k; c++) {
         uint32_t idx = (uint32_t)c * (n_pixels / (uint32_t)k);
         centroids[c*3 + 0] = (float)pixels[idx*3 + 0];
@@ -139,7 +128,7 @@ int kmeans(const uint8_t *pixels, uint32_t n_pixels, int k,
     /* Initialise all labels to 0 so assign() detects first-pass changes */
     memset(labels, 0, n_pixels);
 
-    /* --- Main loop --- */
+    /* Main k-means loop */
     int iter;
     for (iter = 0; iter < max_iter; iter++) {
         int changed = assign(pixels, n_pixels, k, centroids, labels);

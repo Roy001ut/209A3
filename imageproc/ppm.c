@@ -4,14 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* --------------------------------------------------------------------------
- * Internal helpers
- * -------------------------------------------------------------------------- */
+/* Internal helpers */
 
-/*
- * Read a token from a PPM header, skipping '#' comment lines.
- * Returns 1 on success, 0 on EOF/error.
- */
+/* Read a token from PPM header, ignoring comments. Returns 1 on success, 0 on EOF/error. */
 static int read_token(FILE *f, char *buf, size_t bufsize)
 {
     int c;
@@ -45,17 +40,13 @@ static int read_token(FILE *f, char *buf, size_t bufsize)
     return (i > 0) ? 1 : 0;
 }
 
-/*
- * Write a minimal P6 PPM header to an open file.
- */
+/* Write a basic P6 PPM header to an open file. */
 static int write_header(FILE *f, uint32_t width, uint32_t height)
 {
     return fprintf(f, "P6\n%u %u\n255\n", width, height) > 0 ? 0 : -1;
 }
 
-/* --------------------------------------------------------------------------
- * Public API
- * -------------------------------------------------------------------------- */
+/* Public API */
 
 ppm_t *ppm_alloc(uint32_t width, uint32_t height)
 {

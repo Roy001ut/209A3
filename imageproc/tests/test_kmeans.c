@@ -12,7 +12,7 @@ static int tests_passed = 0;
     else       { printf("  FAIL: %s  (line %d)\n", msg, __LINE__); } \
 } while(0)
 
-/* ---- Test 1: 3 clearly-blue + 3 clearly-red pixels, k=2 ---- */
+/* Test 1: Two distinct color clusters (k=2) */
 static void test_two_clusters(void)
 {
     printf("Test 1: 3 blue + 3 red pixels, k=2\n");
@@ -42,7 +42,7 @@ static void test_two_clusters(void)
           "all red pixels share same label");
 }
 
-/* ---- Test 2: all identical pixels, k=3 — must not crash ---- */
+/* Test 2: All identical pixels (k=3, must not crash) */
 static void test_identical_pixels(void)
 {
     printf("Test 2: all identical pixels (128,128,128), k=3 — no crash\n");

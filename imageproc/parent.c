@@ -10,9 +10,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-/* --------------------------------------------------------------------------
- * Robust pipe I/O
- * -------------------------------------------------------------------------- */
+/* Robust pipe I/O helpers */
 static ssize_t write_all(int fd, const void *buf, size_t count)
 {
     size_t         done = 0;
@@ -38,9 +36,7 @@ static ssize_t read_all(int fd, void *buf, size_t count)
     return (ssize_t)done;
 }
 
-/* --------------------------------------------------------------------------
- * send_cmd — write a cmd_t to a worker's cmd pipe
- * -------------------------------------------------------------------------- */
+/* Send command message to worker pipe */
 static void send_cmd(int cmd_fd, uint8_t type, uint8_t cluster_id,
                      uint32_t W, uint32_t H, float param,
                      const char *infile, const char *outfile)
@@ -57,24 +53,14 @@ static void send_cmd(int cmd_fd, uint8_t type, uint8_t cluster_id,
     write_all(cmd_fd, &c, sizeof(cmd_t));
 }
 
-/* --------------------------------------------------------------------------
- * read_resp — read one resp_t; returns 0 on success, -1 on short read.
- * -------------------------------------------------------------------------- */
+/* Read response message, returning 0 on success or -1 on short read */
 static int read_resp(int resp_fd, resp_t *r)
 {
     ssize_t nr = read_all(resp_fd, r, sizeof(resp_t));
     return (nr == (ssize_t)sizeof(resp_t)) ? 0 : -1;
 }
 
-/* --------------------------------------------------------------------------
- * handle_error_resp — called whenever resp.type == RESP_ERROR.
- *
- * Prints the error message, sends CMD_TERMINATE to shut the worker down
- * cleanly, closes the cmd pipe end, and marks the worker as failed.
- *
- * After this returns, the caller must NOT send any further commands to
- * worker i or read any further responses from it.
- * -------------------------------------------------------------------------- */
+/* Handle RESP_ERROR: print message, send terminate, and mark worker as failed */
 static void handle_error_resp(int i, const resp_t *r,
                                int *cmd_pipe_w, int *failed)
 {
@@ -92,9 +78,7 @@ static void handle_error_resp(int i, const resp_t *r,
     failed[i] = 1;
 }
 
-/* --------------------------------------------------------------------------
- * Gaussian pre-blur for k-means (sigma=1, 5-tap separable kernel)
- * -------------------------------------------------------------------------- */
+/* Gaussian pre-blur for k-means (sigma=1, 5-tap separable kernel) */
 static void gaussian_blur_rgb(const uint8_t *src, uint8_t *out_buf,
                                uint32_t W, uint32_t H)
 {
@@ -146,17 +130,13 @@ static void gaussian_blur_rgb(const uint8_t *src, uint8_t *out_buf,
     free(tmp);
 }
 
-/* --------------------------------------------------------------------------
- * run_parent
- * -------------------------------------------------------------------------- */
+/* Main parent process loop */
 int run_parent(const char *infile, const char *outfile,
                int k, int tiles_per_worker)
 {
     (void)tiles_per_worker;  /* tile count is fixed inside worker (2) */
 
-    /* ------------------------------------------------------------------ */
-    /* 1. Read input image                                                 */
-    /* ------------------------------------------------------------------ */
+    /* Read input image */
     ppm_t *img = ppm_read(infile);
     if (!img) {
         fprintf(stderr, "parent: cannot read input file: %s\n", infile);
@@ -167,9 +147,7 @@ int run_parent(const char *infile, const char *outfile,
     uint32_t H        = img->height;
     uint32_t n_pixels = W * H;
 
-    /* ------------------------------------------------------------------ */
-    /* 2. Run k-means                                                      */
-    /* ------------------------------------------------------------------ */
+    /* Run k-means clustering */
     uint8_t *labels    = malloc(n_pixels);
     float   *centroids = malloc((size_t)k * 3 * sizeof(float));
     if (!labels || !centroids) {
@@ -195,9 +173,7 @@ int run_parent(const char *infile, const char *outfile,
     ppm_free(img);
     img = NULL;
 
-    /* ------------------------------------------------------------------ */
-    /* 3. Fork k persistent workers                                        */
-    /* ------------------------------------------------------------------ */
+    /* Fork k persistent workers */
     int   cmd_pipe_w[8]   = {-1,-1,-1,-1,-1,-1,-1,-1};
     int   resp_pipe_r[8]  = {-1,-1,-1,-1,-1,-1,-1,-1};
     pid_t worker_pids[8]  = {0};
@@ -241,10 +217,7 @@ int run_parent(const char *infile, const char *outfile,
         resp_pipe_r[i]  = rp[0];
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 4. Send CMD_LOAD to all workers (send-all first)                   */
-    /*    Two separate writes: cmd_t struct, then labels mask.            */
-    /* ------------------------------------------------------------------ */
+    /* Send CMD_LOAD to all workers, writing command then mask */
     for (int i = 0; i < k; i++) {
         if (failed[i]) continue;
         printf("[Parent] -> [Worker %d]: CMD_LOAD + WxH mask\n", i);
@@ -253,9 +226,7 @@ int run_parent(const char *infile, const char *outfile,
         write_all(cmd_pipe_w[i], labels, n_pixels);  /* separate write for mask */
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 5. Read RESP_READY from all workers (collect-all after)            */
-    /* ------------------------------------------------------------------ */
+    /* Wait for RESP_READY from all workers */
     for (int i = 0; i < k; i++) {
         if (failed[i]) continue;
         resp_t r;
@@ -275,9 +246,7 @@ int run_parent(const char *infile, const char *outfile,
         }
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 6. Send CMD_ANALYZE to all workers (send-all first)                */
-    /* ------------------------------------------------------------------ */
+    /* Ask workers to analyze their clusters */
     for (int i = 0; i < k; i++) {
         if (failed[i]) continue;
         printf("[Parent] -> [Worker %d]: CMD_ANALYZE\n", i);
@@ -285,9 +254,7 @@ int run_parent(const char *infile, const char *outfile,
         send_cmd(cmd_pipe_w[i], CMD_ANALYZE, (uint8_t)i, W, H, 0.0f, NULL, NULL);
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 7. Read RESP_STATS from all workers (collect-all after)            */
-    /* ------------------------------------------------------------------ */
+    /* Collect stats from workers */
     resp_t stats[8];
     memset(stats, 0, sizeof(stats));
 
@@ -303,9 +270,7 @@ int run_parent(const char *infile, const char *outfile,
         }
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 8. Decision loop                                                    */
-    /* ------------------------------------------------------------------ */
+    /* Decide actions based on stats */
     int decision[8] = {0};
 
     printf("=== per-cluster decisions ===\n");
@@ -341,10 +306,7 @@ int run_parent(const char *infile, const char *outfile,
     printf("[Parent] decide\n");
     fflush(stdout);
 
-    /* ------------------------------------------------------------------ */
-    /* 9. Send decided commands, reading RESP_DONE after each             */
-    /*    A RESP_ERROR at any point marks the worker failed and stops.    */
-    /* ------------------------------------------------------------------ */
+    /* Issue work commands to each worker */
     for (int i = 0; i < k; i++) {
         if (failed[i]) continue;
 
@@ -396,9 +358,7 @@ int run_parent(const char *infile, const char *outfile,
         }
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 10. Send CMD_SAVE to all non-failed workers (send-all first)       */
-    /* ------------------------------------------------------------------ */
+    /* Save resulting layers */
     char layer_files[8][MAX_PATH];
     for (int i = 0; i < k; i++) {
         snprintf(layer_files[i], MAX_PATH,
@@ -431,9 +391,7 @@ int run_parent(const char *infile, const char *outfile,
                     i, (unsigned)r.status);
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 11. Send CMD_TERMINATE to all non-already-terminated workers       */
-    /* ------------------------------------------------------------------ */
+    /* Terminate workers */
     for (int i = 0; i < k; i++) {
         if (cmd_pipe_w[i] < 0) continue;  /* already closed by handle_error_resp */
         printf("[Parent] -> [Worker %d]: CMD_TERMINATE\n", i);
@@ -444,17 +402,13 @@ int run_parent(const char *infile, const char *outfile,
         cmd_pipe_w[i] = -1;
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 12. waitpid all workers                                            */
-    /* ------------------------------------------------------------------ */
+    /* Reap child processes */
     for (int i = 0; i < k; i++) {
         if (worker_pids[i] > 0)
             waitpid(worker_pids[i], NULL, 0);
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 13. Stitch layers                                                   */
-    /* ------------------------------------------------------------------ */
+    /* Stitch output layers together */
     ppm_t *orig = ppm_read(infile);
     if (!orig) {
         fprintf(stderr, "parent: cannot re-read input for stitch: %s\n", infile);
@@ -497,9 +451,7 @@ int run_parent(const char *infile, const char *outfile,
     printf("[Parent] stitch k layers => output.ppm\n");
     fflush(stdout);
 
-    /* ------------------------------------------------------------------ */
-    /* 14. Write final output PPM                                          */
-    /* ------------------------------------------------------------------ */
+    /* Write result to disk */
     if (ppm_write(output, outfile) != 0) {
         fprintf(stderr, "parent: failed to write output: %s\n", outfile);
         ppm_free(output); free(labels);
@@ -507,9 +459,7 @@ int run_parent(const char *infile, const char *outfile,
     }
     ppm_free(output);
 
-    /* ------------------------------------------------------------------ */
-    /* 15. Print summary                                                   */
-    /* ------------------------------------------------------------------ */
+    /* Final execution summary */
     fprintf(stderr, "\n=== imageproc summary ===\n");
     fprintf(stderr, "  Input : %s  (%ux%u)\n", infile, W, H);
     fprintf(stderr, "  Output: %s\n", outfile);

@@ -9,9 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 
-/* --------------------------------------------------------------------------
- * Robust pipe read
- * -------------------------------------------------------------------------- */
+/* Robust pipe I/O helper */
 static ssize_t read_all(int fd, void *buf, size_t count)
 {
     size_t  done = 0;
@@ -25,17 +23,13 @@ static ssize_t read_all(int fd, void *buf, size_t count)
     return (ssize_t)done;
 }
 
-/* --------------------------------------------------------------------------
- * run_tile
- * -------------------------------------------------------------------------- */
+/* Main tile process logic */
 int run_tile(int job_fd, int result_fd)
 {
     tile_result_t result;
     memset(&result, 0, sizeof(result));
 
-    /* ------------------------------------------------------------------ */
-    /* 1. Read tile_job_t                                                  */
-    /* ------------------------------------------------------------------ */
+    /* Read job parameters */
     tile_job_t job;
     ssize_t nr = read_all(job_fd, &job, sizeof(tile_job_t));
     if (nr != (ssize_t)sizeof(tile_job_t)) {
@@ -44,9 +38,7 @@ int run_tile(int job_fd, int result_fd)
         goto send_result;
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 2. Read mask slice                                                  */
-    /* ------------------------------------------------------------------ */
+    /* Read image mask block */
     uint32_t strip_rows = job.row_end - job.row_start;
     uint32_t mask_bytes = strip_rows * job.img_width;
 
@@ -68,9 +60,7 @@ int run_tile(int job_fd, int result_fd)
     close(job_fd);
     job_fd = -1;
 
-    /* ------------------------------------------------------------------ */
-    /* 3. Load row strip from input file                                   */
-    /* ------------------------------------------------------------------ */
+    /* Read image strip from file */
     ppm_t *strip = ppm_read_strip(job.infile, job.img_width,
                                   job.row_start, job.row_end);
     if (!strip) {
@@ -81,9 +71,7 @@ int run_tile(int job_fd, int result_fd)
         goto send_result;
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 4. Count owned pixels                                               */
-    /* ------------------------------------------------------------------ */
+    /* Count valid pixels for this tile */
     uint32_t n_owned = 0;
     for (uint32_t i = 0; i < strip_rows * job.img_width; i++) {
         if (tile_mask[i] == job.cluster_id) n_owned++;
@@ -92,9 +80,7 @@ int run_tile(int job_fd, int result_fd)
     float lum_mean   = 0.0f;
     float lum_stddev = 0.0f;
 
-    /* ------------------------------------------------------------------ */
-    /* 5. Dispatch on operation                                            */
-    /* ------------------------------------------------------------------ */
+    /* Perform required operation */
     if (job.operation == TILE_OP_HISTEQ) {
         /* Histogram equalisation using pre-built LUT from worker */
         histeq(strip->data, job.img_width, strip_rows,
@@ -136,14 +122,10 @@ int run_tile(int job_fd, int result_fd)
         goto send_result;
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 6. Compute output_variance (variance of luminance over owned px)   */
-    /* ------------------------------------------------------------------ */
+    /* Calculate output variance */
     float output_variance = lum_stddev * lum_stddev;
 
-    /* ------------------------------------------------------------------ */
-    /* 7. Write processed strip to tmp_outfile                            */
-    /* ------------------------------------------------------------------ */
+    /* Write processed image strip to temporary file */
     printf("[Tile] %s; write %s\n", job.operation == TILE_OP_HISTEQ ? "histeq" : "sharpen", job.tmp_outfile);
     fflush(stdout);
     if (ppm_write_strip(strip, job.tmp_outfile, 0, strip_rows) != 0) {
@@ -155,9 +137,7 @@ int run_tile(int job_fd, int result_fd)
         goto send_result;
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 8. Build result                                                     */
-    /* ------------------------------------------------------------------ */
+    /* Construct and send result back to parent */
     result.status          = 0;
     result.rows_written    = strip_rows;
     result.pixels_owned    = n_owned;

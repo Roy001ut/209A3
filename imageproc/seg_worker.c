@@ -38,7 +38,7 @@ int run_seg_worker(int job_fd, int result_fd)
     seg_result_t result;
     memset(&result, 0, sizeof(result));
 
-    /* 1. Read seg_job_t */
+    /* Read job parameters */
     seg_job_t job;
     ssize_t nr = read_all(job_fd, &job, sizeof(seg_job_t));
     if (nr != (ssize_t)sizeof(seg_job_t)) {
@@ -46,7 +46,7 @@ int run_seg_worker(int job_fd, int result_fd)
         goto send_result;
     }
 
-    /* 2. Read full mask */
+    /* Read complete pixel mask */
     uint32_t mask_bytes = job.img_width * job.img_height;
     uint8_t *mask = malloc(mask_bytes);
     if (!mask) {
@@ -64,7 +64,7 @@ int run_seg_worker(int job_fd, int result_fd)
     close(job_fd);
     job_fd = -1;
 
-    /* 3. Open input image */
+    /* Load input image */
     ppm_t *img = ppm_read(job.infile);
     if (!img) {
         fprintf(stderr, "seg_worker: cannot read %s\n", job.infile);
@@ -72,7 +72,7 @@ int run_seg_worker(int job_fd, int result_fd)
         goto send_result;
     }
 
-    /* 4. Scan owned pixels: compute pixel_count, lum stats, centroid RGB */
+    /* Compute statistics and centroid for assigned cluster */
     uint32_t n_pixels = job.img_width * job.img_height;
     uint32_t count    = 0;
     double   sum_lum  = 0.0, sum_lum2 = 0.0;
