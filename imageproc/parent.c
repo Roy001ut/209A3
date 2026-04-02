@@ -189,6 +189,8 @@ int run_parent(const char *infile, const char *outfile,
     int iters = kmeans(blur_buf, n_pixels, k, labels, centroids, 50);
     free(blur_buf);
     fprintf(stderr, "parent: k-means converged in %d iteration(s)\n", iters);
+    printf("[Parent] k-means => labels[]\n");
+    fflush(stdout);
     free(centroids);
     ppm_free(img);
     img = NULL;
@@ -245,6 +247,8 @@ int run_parent(const char *infile, const char *outfile,
     /* ------------------------------------------------------------------ */
     for (int i = 0; i < k; i++) {
         if (failed[i]) continue;
+        printf("[Parent] -> [Worker %d]: CMD_LOAD + WxH mask\n", i);
+        fflush(stdout);
         send_cmd(cmd_pipe_w[i], CMD_LOAD, (uint8_t)i, W, H, 0.0f, infile, NULL);
         write_all(cmd_pipe_w[i], labels, n_pixels);  /* separate write for mask */
     }
@@ -276,6 +280,8 @@ int run_parent(const char *infile, const char *outfile,
     /* ------------------------------------------------------------------ */
     for (int i = 0; i < k; i++) {
         if (failed[i]) continue;
+        printf("[Parent] -> [Worker %d]: CMD_ANALYZE\n", i);
+        fflush(stdout);
         send_cmd(cmd_pipe_w[i], CMD_ANALYZE, (uint8_t)i, W, H, 0.0f, NULL, NULL);
     }
 
@@ -332,6 +338,7 @@ int run_parent(const char *infile, const char *outfile,
         printf("cluster %d: lum=%.1f stddev=%.1f -> %s\n",
                i, mean, stddev, desc);
     }
+    printf("[Parent] decide\n");
     fflush(stdout);
 
     /* ------------------------------------------------------------------ */
@@ -346,6 +353,8 @@ int run_parent(const char *infile, const char *outfile,
         switch (decision[i]) {
 
         case 0: /* BRIGHTEN */
+            printf("[Parent] -> [Worker %d]: CMD_BRIGHTEN (param=1.4)\n", i);
+            fflush(stdout);
             send_cmd(cmd_pipe_w[i], CMD_BRIGHTEN, (uint8_t)i,
                      W, H, 1.4f, NULL, NULL);
             if (read_resp(resp_pipe_r[i], &r) != 0) { failed[i] = 1; break; }
@@ -353,6 +362,8 @@ int run_parent(const char *infile, const char *outfile,
             break;
 
         case 1: /* SKIP */
+            printf("[Parent] -> [Worker %d]: CMD_SKIP\n", i);
+            fflush(stdout);
             send_cmd(cmd_pipe_w[i], CMD_SKIP, (uint8_t)i,
                      W, H, 0.0f, NULL, NULL);
             if (read_resp(resp_pipe_r[i], &r) != 0) { failed[i] = 1; break; }
@@ -360,6 +371,8 @@ int run_parent(const char *infile, const char *outfile,
             break;
 
         case 2: /* EQUALIZE */
+            printf("[Parent] -> [Worker %d]: CMD_EQUALIZE (param=0.5)\n", i);
+            fflush(stdout);
             send_cmd(cmd_pipe_w[i], CMD_EQUALIZE, (uint8_t)i,
                      W, H, 0.5f, NULL, NULL);
             if (read_resp(resp_pipe_r[i], &r) != 0) { failed[i] = 1; break; }
@@ -367,10 +380,14 @@ int run_parent(const char *infile, const char *outfile,
             break;
 
         case 3: /* EQUALIZE then SHARPEN */
+            printf("[Parent] -> [Worker %d]: CMD_EQUALIZE (param=0.5)\n", i);
+            fflush(stdout);
             send_cmd(cmd_pipe_w[i], CMD_EQUALIZE, (uint8_t)i,
                      W, H, 0.5f, NULL, NULL);
             if (read_resp(resp_pipe_r[i], &r) != 0) { failed[i] = 1; break; }
             if (r.type == RESP_ERROR) { handle_error_resp(i, &r, cmd_pipe_w, failed); break; }
+            printf("[Parent] -> [Worker %d]: CMD_SHARPEN (param=1.2)\n", i);
+            fflush(stdout);
             send_cmd(cmd_pipe_w[i], CMD_SHARPEN, (uint8_t)i,
                      W, H, 1.2f, NULL, NULL);
             if (read_resp(resp_pipe_r[i], &r) != 0) { failed[i] = 1; break; }
@@ -387,6 +404,8 @@ int run_parent(const char *infile, const char *outfile,
         snprintf(layer_files[i], MAX_PATH,
                  "/tmp/imageproc_%d_layer%d.ppm", (int)getpid(), i);
         if (failed[i]) continue;
+        printf("[Parent] -> [Worker %d]: CMD_SAVE (%s)\n", i, layer_files[i]);
+        fflush(stdout);
         send_cmd(cmd_pipe_w[i], CMD_SAVE, (uint8_t)i,
                  W, H, 0.0f, NULL, layer_files[i]);
     }
@@ -417,6 +436,8 @@ int run_parent(const char *infile, const char *outfile,
     /* ------------------------------------------------------------------ */
     for (int i = 0; i < k; i++) {
         if (cmd_pipe_w[i] < 0) continue;  /* already closed by handle_error_resp */
+        printf("[Parent] -> [Worker %d]: CMD_TERMINATE\n", i);
+        fflush(stdout);
         send_cmd(cmd_pipe_w[i], CMD_TERMINATE, (uint8_t)i,
                  W, H, 0.0f, NULL, NULL);
         close(cmd_pipe_w[i]);
@@ -472,6 +493,9 @@ int run_parent(const char *infile, const char *outfile,
         ppm_free(layer);
         unlink(layer_files[i]);
     }
+
+    printf("[Parent] stitch k layers => output.ppm\n");
+    fflush(stdout);
 
     /* ------------------------------------------------------------------ */
     /* 14. Write final output PPM                                          */

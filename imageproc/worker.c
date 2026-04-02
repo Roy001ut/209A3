@@ -151,6 +151,8 @@ static float fork_tiles(uint8_t operation, float param,
                  "/tmp/imageproc_%d_c%d_op%d_t%u.ppm",
                  getpid(), (int)cluster_id, (int)operation, t);
 
+        printf("[Worker %d] -> [Tile %d]: tile_job_t + mask slice\n", cluster_id, t);
+        fflush(stdout);
         write_all(tile_job_w[t], &tjob, sizeof(tile_job_t));
         write_all(tile_job_w[t], mask + row_start * W, slice_bytes);
         close(tile_job_w[t]);
@@ -173,6 +175,8 @@ static float fork_tiles(uint8_t operation, float param,
     }
 
     /* ---- stitch strips back into pixels[] ---- */
+    printf("[Worker %d] stitch; waitpid()\n", cluster_id);
+    fflush(stdout);
     for (uint32_t t = 0; t < tile_count; t++) {
         if (tresults[t].status != 0) continue;
 
@@ -300,6 +304,8 @@ int run_worker(int cmd_fd, int resp_fd)
             memcpy(pixels, img->data, (size_t)W * H * 3);
             ppm_free(img);
 
+            printf("[Worker %d] -> [Parent]: RESP_READY\n", cluster_id);
+            fflush(stdout);
             send_resp(resp_fd, RESP_READY, 0);
             break;
         }
@@ -338,6 +344,8 @@ int run_worker(int cmd_fd, int resp_fd)
                 r.lum_stddev  = (float)sqrt(var);
                 r.pixel_count = count;
             }
+            printf("[Worker %d] -> [Parent]: RESP_STATS (lum_mean=%.1f, lum_stddev=%.1f)\n", cluster_id, r.lum_mean, r.lum_stddev);
+            fflush(stdout);
             write_all(resp_fd, &r, sizeof(resp_t));
             break;
         }
@@ -357,6 +365,8 @@ int run_worker(int cmd_fd, int resp_fd)
                     pixels[i*3+c] = (v > 255) ? 255 : (uint8_t)v;
                 }
             }
+            printf("[Worker %d] -> [Parent]: RESP_DONE\n", cluster_id);
+            fflush(stdout);
             send_resp(resp_fd, RESP_DONE, 0);
             break;
         }
@@ -371,6 +381,8 @@ int run_worker(int cmd_fd, int resp_fd)
             /* Build global LUT from in-memory pixels */
             uint8_t eq_lut[256];
             histeq_build_lut(pixels, W * H, mask, cluster_id, eq_lut);
+            printf("[Worker %d] build eq_lut[256]; fork tiles\n", cluster_id);
+            fflush(stdout);
 
             float quality = fork_tiles(TILE_OP_HISTEQ, cmd.param,
                                        pixels, mask, cluster_id, W, H,
@@ -381,6 +393,8 @@ int run_worker(int cmd_fd, int resp_fd)
             r.type    = RESP_DONE;
             r.status  = (quality < 0.0f) ? 1 : 0;
             r.quality = (quality >= 0.0f) ? quality : 0.0f;
+            printf("[Worker %d] -> [Parent]: RESP_DONE (quality=%.2f)\n", cluster_id, r.quality);
+            fflush(stdout);
             write_all(resp_fd, &r, sizeof(resp_t));
             break;
         }
@@ -391,6 +405,8 @@ int run_worker(int cmd_fd, int resp_fd)
                 send_resp(resp_fd, RESP_DONE, 1);
                 break;
             }
+            printf("[Worker %d] fork tiles\n", cluster_id);
+            fflush(stdout);
 
             float quality = fork_tiles(TILE_OP_SHARPEN, cmd.param,
                                        pixels, mask, cluster_id, W, H,
@@ -407,6 +423,8 @@ int run_worker(int cmd_fd, int resp_fd)
 
         /* ---------------------------------------------------------------- */
         case CMD_SKIP:
+            printf("[Worker %d] -> [Parent]: RESP_DONE\n", cluster_id);
+            fflush(stdout);
             send_resp(resp_fd, RESP_DONE, 0);
             break;
 
@@ -432,14 +450,20 @@ int run_worker(int cmd_fd, int resp_fd)
                     out->data[i*3+2] = pixels[i*3+2];
                 }
             }
+            printf("[Worker %d] write pixel buf\n", cluster_id);
+            fflush(stdout);
             int rc = ppm_write(out, cmd.outfile);
             ppm_free(out);
+            printf("[Worker %d] -> [Parent]: RESP_DONE\n", cluster_id);
+            fflush(stdout);
             send_resp(resp_fd, RESP_DONE, rc != 0 ? 1 : 0);
             break;
         }
 
         /* ---------------------------------------------------------------- */
         case CMD_TERMINATE:
+            printf("[Worker %d] free(); exit(0)\n", cluster_id);
+            fflush(stdout);
             free(pixels);
             free(mask);
             close(cmd_fd);

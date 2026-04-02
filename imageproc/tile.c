@@ -144,6 +144,8 @@ int run_tile(int job_fd, int result_fd)
     /* ------------------------------------------------------------------ */
     /* 7. Write processed strip to tmp_outfile                            */
     /* ------------------------------------------------------------------ */
+    printf("[Tile] %s; write %s\n", job.operation == TILE_OP_HISTEQ ? "histeq" : "sharpen", job.tmp_outfile);
+    fflush(stdout);
     if (ppm_write_strip(strip, job.tmp_outfile, 0, strip_rows) != 0) {
         fprintf(stderr, "tile: ppm_write_strip failed for %s\n",
                 job.tmp_outfile);
@@ -171,6 +173,8 @@ int run_tile(int job_fd, int result_fd)
 send_result:
     if (job_fd >= 0) close(job_fd);
 
+    printf("[Tile] -> [Worker %d]: tile_result_t\n", job.cluster_id);
+    fflush(stdout);
     ssize_t nw = write(result_fd, &result, sizeof(tile_result_t));
     if (nw != (ssize_t)sizeof(tile_result_t)) {
         perror("tile: write result");
