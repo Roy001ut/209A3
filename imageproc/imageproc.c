@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 
 #include "parent.h"
 
@@ -24,6 +25,10 @@ int main(int argc, char *argv[])
         fprintf(stderr, "tiles must be 1-8\n");
         return 1;
     }
+
+#ifdef SIGPIPE
+    signal(SIGPIPE, SIG_IGN);
+#endif
 
     return run_parent(infile, outfile, k, tiles);
 }
